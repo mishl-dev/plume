@@ -1,63 +1,60 @@
-use chrono::NaiveDate;
-use reqwest::Client;
-use serde::Serialize;
-use scraper::{Html, Selector};
+use std::sync::Mutex;
+use std::num::NonZeroUsize;
 use std::collections::HashMap;
 use std::error::Error;
+use once_cell::sync::Lazy;
+use lru::LruCache;
+use scraper::{Html, Selector};
 
-#[derive(Debug, Serialize)]
+static CACHE: Lazy<Mutex<LruCache<(String, usize), String>>> = Lazy::new(|| {
+    Mutex::new(LruCache::new(NonZeroUsize::new(10000).unwrap()))
+});
+
+#[derive(Debug, Clone)]
 pub struct DuckDuckGoResult {
     pub title: String,
     pub link: String,
     pub snippet: String,
-    pub favicon: Option<String>,
-    pub date: Option<NaiveDate>,
+    pub favicon: Option<String>
 }
 
 pub struct DuckDuckGoSearch {
-    client: Client,
+    client: reqwest::Client,
     base_url: String,
 }
 
 impl DuckDuckGoSearch {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: reqwest::Client::new(),
             base_url: "https://html.duckduckgo.com/html/".to_string(),
         }
     }
 
     async fn get_html(&self, query: &str, start: usize) -> Result<String, Box<dyn Error>> {
+        let key = (query.to_string(), start);
+        if let Some(html) = CACHE.lock().unwrap().get(&key) {
+            return Ok(html.clone());
+        }
+
         let mut params: HashMap<&'static str, &str> = HashMap::new();
-        let start_str: String = start.to_string();
+        let start_str = start.to_string();
         params.insert("q", query);
         params.insert("kl", "us-en");
         params.insert("s", &start_str);
 
-
-        let res: String = self
-            .client
+        let res = self.client
             .post(&self.base_url)
             .form(&params)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            )
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             .send()
             .await?
             .text()
             .await?;
-        Ok(res)
-    }
 
-    fn parse_date(&self, date_str: &str) -> Option<NaiveDate> {
-        let formats: [&'static str; 3] = ["%b %d, %Y", "%d %b %Y", "%Y-%m-%d"];
-        for fmt in &formats {
-            if let Ok(d) = NaiveDate::parse_from_str(date_str, fmt) {
-                return Some(d);
-            }
-        }
-        None
+        let mut cache = CACHE.lock().unwrap();
+        cache.put(key, res.clone());
+        Ok(res)
     }
 
     fn parse_html(&self, html: &str) -> Vec<DuckDuckGoResult> {
@@ -67,7 +64,6 @@ impl DuckDuckGoSearch {
         let title_selector = Selector::parse("a.result__a").unwrap();
         let snippet_selector = Selector::parse("a.result__snippet").unwrap();
         let favicon_selector = Selector::parse("img.result__icon__img").unwrap();
-        let extras_selector = Selector::parse("div.result__extras__url span").unwrap();
 
         for element in document.select(&result_selector) {
             let title_elem = element.select(&title_selector).next();
@@ -86,18 +82,11 @@ impl DuckDuckGoSearch {
                     .and_then(|img| img.value().attr("src"))
                     .map(|s| if s.starts_with("http") { s.to_string() } else { format!("https:{}", s) });
 
-                let date = element
-                    .select(&extras_selector)
-                    .next()
-                    .map(|s| self.parse_date(&s.text().collect::<String>()))
-                    .flatten();
-
                 results.push(DuckDuckGoResult {
                     title,
                     link,
                     snippet,
-                    favicon,
-                    date,
+                    favicon
                 });
             }
         }
