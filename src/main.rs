@@ -1,6 +1,6 @@
 mod ddg;
 
-use ddg::{DuckDuckGoSearch};
+use ddg::DuckDuckGoSearch;
 use serde::Deserialize;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use utoipa::OpenApi;
@@ -20,16 +20,24 @@ struct ResultWrapper {
     favicon: Option<String>,
 }
 
-#[derive(OpenApi)]
-#[openapi(
-    paths(search),
-    components(schemas(SearchRequest, ResultWrapper))
+#[utoipa::path(
+    get,
+    path = "/",
+    responses((status = 200, description = "Hello message"))
 )]
-struct ApiDoc;
-
 #[get("/")]
 async fn hello() -> impl Responder {
-    HttpResponse::Ok().body("Hello world!")
+    HttpResponse::Ok().body("Hello :3")
+}
+
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses((status = 200, description = "Service is healthy"))
+)]
+#[get("/health")]
+async fn health_check() -> impl Responder {
+    HttpResponse::Ok().body("OK")
 }
 
 #[utoipa::path(
@@ -48,14 +56,13 @@ async fn search(req: web::Json<SearchRequest>) -> impl Responder {
 
     match ddg.get_results(&req.query, pages).await {
         Ok(results) => {
-            // Convert DuckDuckGoResult -> ResultWrapper
             let wrapped: Vec<ResultWrapper> = results
                 .into_iter()
                 .map(|r| ResultWrapper {
                     title: r.title,
                     link: r.link,
                     snippet: r.snippet,
-                    favicon: r.favicon
+                    favicon: r.favicon,
                 })
                 .collect();
             HttpResponse::Ok().json(wrapped)
@@ -63,19 +70,27 @@ async fn search(req: web::Json<SearchRequest>) -> impl Responder {
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(hello, health_check, search),
+    components(schemas(SearchRequest, ResultWrapper))
+)]
+struct ApiDoc;
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let openapi = ApiDoc::openapi();
-
     println!("Starting server at http://localhost:8080/");
 
     HttpServer::new(move || {
         App::new()
             .service(hello)
+            .service(health_check)
             .service(search)
             .service(
                 SwaggerUi::new("/swagger-ui/{_:.*}")
-                    .url("/api-docs/openapi.json", openapi.clone())
+                    .url("/api-docs/openapi.json", openapi.clone()),
             )
     })
     .bind(("127.0.0.1", 8080))?
